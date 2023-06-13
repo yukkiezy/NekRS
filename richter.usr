@@ -1,0 +1,313 @@
+      include "aravg.f"
+      include "extract_yp.f"
+      include "limits.f"
+      include "recycle.f"
+      include "utilities.f"
+
+c-----------------------------------------------------------------------
+      subroutine userchk
+
+      include 'SIZE'
+      include 'TOTAL'
+
+c     element maps for averaging, statistics
+      integer emap1(lelv),emap2(lelv),emapin(lelv),
+     $    emapoin(lelv)
+      real e1xyz(3), e2xyz(3)
+
+      common /roi/ emap1,emap2,emapin,emapoin,e1xyz,e2xyz
+
+c     for loading inlet conditions from gfldr
+
+      real uibc(lx1*ly1*lz1*lelv)
+      real vibc(lx1*ly1*lz1*lelv)
+      real wibc(lx1*ly1*lz1*lelv)
+      common /inletbcs/ uibc,vibc,wibc
+
+      common /nrsscptr/ nrs_scptr(3)
+      integer*8         nrs_scptr
+
+      real uavin,uav1,uav2
+
+      real Dh,rho0,mu0
+      common /props/ Dh,rho0,mu0
+
+c     for drag calculation
+      real drag_wall
+      real x0(3)
+      data x0 / 0.0, 0.0, 0.0 /
+      save x0
+      save drag_wall
+
+      integer iobj_wall, ssid
+      save iobj_wall
+
+c     for traction calculation
+      real tracx(lx1,ly1,lz1,lelv),tracy(lx1,ly1,lz1,lelv),
+     $     tracz(lx1,ly1,lz1,lelv)
+      integer trsidesets(4)
+
+      real uinmax
+      integer js1,jf1,jskip1,js2,jf2,jskip2,ie
+
+c     saving inlet bc for usrwrk array
+      if(istep.eq.0) then
+        if (time.eq.0.0) call gfldr('inbc0.f00001')
+        call copy(uibc,vx,ntot)
+        call copy(vibc,vy,ntot)
+        call copy(wibc,vz,ntot)
+      endif
+
+c     for debugging
+c      call cfill(uibc,42.0,ntot)
+c      call cfill(vibc,43.0,ntot)
+c      call cfill(wibc,44.0,ntot)
+
+      nrs_scptr(1) = loc(uibc(1))
+      nrs_scptr(2) = loc(vibc(1))
+      nrs_scptr(3) = loc(wibc(1))
+
+c     drag calculation on internal obstacle
+
+      ! sideset of interest
+      ssid = 4
+
+      if (istep.eq.0) then
+        call create_obj(iobj_wall,ssid,1)
+      endif
+
+      call torque_calc(1.0,x0,.false.,.false.) ! compute wall shear
+      drag_wall = dragx(iobj_wall)
+
+c     end of drag calculation
+
+      if (nio.eq.0) then
+         write(*,41) drag_wall
+      endif
+
+41    format(1p1e16.8,': drag_wall')
+
+      uavin = emap_avg(vx,emapin)
+      uav1  = emap_avg(vx,emap1)
+      uav2  = emap_avg(vx,emap2)
+
+
+      uinmax = -9999.99
+
+      do ie=1,nelv
+       if(emapin(ie).gt.0) then
+         call facind2 (js1,jf1,jskip1,js2,jf2,jskip2,emapin(ie))
+         do j2=js2,jf2,jskip2
+         do j1=js1,jf1,jskip1
+            if(vx(j1,j2,1,ie).gt.uinmax) then
+             uinmax = vx(j1,j2,1,ie)
+            endif
+         enddo
+         enddo
+       endif
+      enddo
+
+      uinmax = glmax(uinmax,1)
+
+      if(nio.eq.0) then
+        write(*,11) uavin,uinmax
+        write(*,12) uav1
+        write(*,13) uav2
+      endif
+
+c     calculating traction
+
+      trsidesets = (/ 4, 5, 6, 7 /)
+
+c      call sideset_traction(tracx,tracy,tracz,trsidesets,4)
+c      call outpost(tracx,tracy,tracz,pr,t,'tri')
+
+
+11    format(1p2e16.8,': avg/max of vx at emapin')
+12    format(1p1e16.8,': avg of vx at emap1')
+13    format(1p1e16.8,': avg of vx at emap2')
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine useric (ix,iy,iz,ieg)
+
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      real usum, a, b, c1, c2, c3, c4, fac
+      integer i, j
+
+      fac = 0.338477894
+      a = 0.2 ! y E {-a,a}
+      b = 0.4 ! z E {-b,b}
+
+      usum = 0.0;
+      do i=1,100
+        j = 2*i - 1;
+        c1 = -1.0**((j-1.0)*0.5)
+        c2 = 1.0 -(cosh(j*pi*iz/2.0/a)/cosh(j*pi*b/2.0/a))
+        c4 = (pi*iy/2.0/a) - (pi/2.0)
+        c3 = cos(j*c4)/(j**3.0)
+
+        usum = usum + (c1*c2*c3)
+      enddo
+
+      ux = fac*usum
+      ux = 0.0
+      uy = 0.0
+      uz = 0.0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat
+
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat2
+
+      include 'SIZE'
+      include 'TOTAL'
+
+      integer e,f,i,bid,ntot
+      real pt(3), ptmin(3), ptmax(3), norm(3), dtol
+
+      integer js1,jf1,jskip1,js2,jf2,jskip2
+
+      integer emap1(lelv),emap2(lelv),emapin(lelv),
+     $    emapoin(lelv)
+
+      real e1xyz(3), e2xyz(3)
+
+      common /roi/ emap1,emap2,emapin,emapoin,e1xyz,e2xyz
+
+      real warea,tvol,ones(lx1,ly1,lz1,lelv)
+
+      real sc_nrs
+      common /scnrs/ sc_nrs(3)
+
+      real Dh,rho0,mu0
+      common /props/ Dh,rho0,mu0
+
+      Dh     = sc_nrs(1)
+      rho0   = sc_nrs(2)
+      mu0    = sc_nrs(3)
+
+      if(nio.eq.0) then
+        write(*,*) "Reading the following data:"
+        write(*,31) Dh
+        write(*,32) rho0
+        write(*,33) mu0
+      endif
+
+31    format(1p1e16.8,': Dh   ')
+32    format(1p1e16.8,': rho0 ')
+33    format(1p1e16.8,': mu0  ')
+
+c     checks sidesets
+c      do e=1,nelt
+c       do f=1,6
+c       bid = boundaryID(f,e)
+c        if(bid.gt.0) then
+c         call facind2(js1,jf1,jskip1,js2,jf2,jskip2,f)
+c         do j2=js2,jf2,jskip2
+c          do j1=js1,jf1,jskip1
+c           vx(j1,j2,1,e) = bid
+c          enddo
+c         enddo
+c        endif
+c       enddo
+c      enddo
+c
+c      call outpost(vx,vy,vz,pr,t,'bid')
+
+
+c  checks hydraulic diameter
+      ntot = lx1*ly1*lz1*nelv
+      call rone(ones,ntot)
+
+      warea = 0.0
+
+      do e=1,nelt
+       do f=1,6
+        bid = boundaryID(f,e)
+        if (bid.gt.3) warea = warea + facint_v(ones,area,f,e)
+       enddo
+      enddo
+
+      warea = glsum(warea,1)
+
+      tvol = 0.0
+      do i=1,ntot
+        tvol = tvol + bm1(i,1,1,1)
+      enddo
+
+      tvol = glsum(tvol,1)
+
+      if (nio.eq.0) then
+        write(*,21) warea
+        write(*,22) tvol
+        write(*,23) tvol/warea
+      endif
+
+21    format(1p1e16.8,': dimensional wetted area')
+22    format(1p1e16.8,': dimensional total volume')
+23    format(1p1e16.8,': dimensional hydraulic dia')
+
+c     initialising the cbc array for nek5000 routines
+
+      do e=1,nelt
+       do f=1,6
+        bid = boundaryID(f,e)
+        if(bid.eq.1) then
+         cbc(f,e,1) = 'v  '
+        elseif(bid.eq.2) then
+         cbc(f,e,1) = 'O  '
+        elseif(bid.eq.3) then
+         cbc(f,e,1) = 'SYM'
+        elseif(bid.ge.4.and.bid.le.7) then
+         cbc(f,e,1) = 'W  '
+        elseif(bid.ge.8) then
+         cbc(f,e,1) = 'W  '
+        endif
+      enddo
+      enddo
+
+c     building element maps for statistics
+      pt = (/0.23,0.2,-0.2/)
+      ptmin = (/0.21,0.0,-0.4/)
+      ptmax = (/0.28,0.4,0.0/)
+      dtol = 0.14
+      norm = (/1.0,0.0,0.0/)
+      call emap_nsurf2(emap1,e1xyz,pt,norm,dtol,ptmin,ptmax)
+c      call test_emap(emap1,'eoi')
+
+      pt = (/1.266,0.2,-0.2/)
+      ptmin = (/1.19,0.0,-0.4/)
+      ptmax = (/1.34,0.4,0.0/)
+      dtol = 0.14
+      norm = (/1.0,0.0,0.0/)
+      call emap_nsurf2(emap2,e2xyz,pt,norm,dtol,ptmin,ptmax)
+c      call test_emap(emap2,'eoo')
+
+      call emap_sideset(emapin,1,1)
+c      call test_emap(emapin,'ein')
+
+      call emap_sideset(emapoin,4,4)
+c      call test_emap(emapoin,'eow')
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3
+
+      include 'SIZE'
+      include 'TOTAL'
+
+
+      return
+      end
